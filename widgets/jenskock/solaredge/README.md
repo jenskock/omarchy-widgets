@@ -6,7 +6,7 @@ The picture is sample data: 4.2 kW, 18.4 kWh today, a made-up curve. It is not a
 
 ## Sign in
 
-Create a Site Access app at [developer.solaredge.com](https://developer.solaredge.com/) with `SITE_DATA` and `DEVICE_DATA`. The portal rejects `localhost`. Register `https://example.com/` exactly, including the trailing slash. After you approve, the browser opens the Example Domain page. Tap the address bar and copy the full address: it is that URI plus `?code=...`. Paste the whole address or just the code. Setup offers the same URI as the default, so press enter unless the app was registered with a different one. The two have to match character for character. The site id is the number in the monitoring URL.
+Create a Site Access app at [developer.solaredge.com](https://developer.solaredge.com/) with `SITE_DATA` and `DEVICE_DATA`. Set its redirect URI to `http://127.0.0.1:8734/callback`. The portal rejects the name `localhost`. That address is the phone itself, so after you approve, the browser hands the approval straight back to setup. Nothing to copy out of the address bar. The site id is the number in the monitoring address, after `/site/`. Setup asks for the site id, client id and client secret, and keeps them if you press enter.
 
 The token never goes in this file. It stays in `~/.config/omarchy-solaredge/auth.json` (mode 600). SolarEdge replaces the refresh token on every use, and the reader writes the new one back before it asks for readings.
 
@@ -14,7 +14,7 @@ The token never goes in this file. It stays in `~/.config/omarchy-solaredge/auth
 
 Store path: `widgets/jenskock/solaredge/widget.owl`. The folder name is the GitHub login, lowercase, then a name of lowercase letters, digits and dashes. The folder holds only `widget.owl`, `preview.png` and this README.
 
-The reader is inlined. On first run it installs `~/.local/bin/solaredge-sync`, so that name is not an Arch package. `curl` and `jq` are. Readings are `~/.config/omarchy-solaredge/data.json`, which the tile reads directly. A `details` or `force` file in that directory asks for the extra figures; the half-hour poll is an ordinary sync.
+The reader is inlined. On first run it installs `~/.local/bin/solaredge-sync`, so that name is not an Arch package. `curl`, `jq` and `python` are. Setup listens on `127.0.0.1:8734` and opens the approval page with `xdg-open`, which is the launcher's browser bridge, not a package. Readings are `~/.config/omarchy-solaredge/data.json`, which the tile reads directly. A `details` or `force` file in that directory asks for the extra figures; the half-hour poll is an ordinary sync.
 
 Two review notes are expected:
 

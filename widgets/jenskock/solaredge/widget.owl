@@ -10,7 +10,7 @@ widget "solar" {
   // ~/.config/omarchy-solaredge/data.json. A mode file asks for details or a
   // forced refresh; the half-hour poll is an ordinary sync. base64 only builds
   // the HTTP Basic header. chmod keeps the token directory owner-only.
-  requires { pacman: ["curl", "jq"] }
+  requires { pacman: ["curl", "jq", "python"] }
 
   source now = clock every 1m
   source solar = file("~/.config/omarchy-solaredge/data.json") json
@@ -21,12 +21,12 @@ widget "solar" {
   set -uo pipefail
   umask 077
   dest="$HOME/.local/bin/solaredge-sync"
-  marker="# solaredge-sync 1.0.3"
+  marker="# solaredge-sync 1.0.4"
   if ! grep -qxF "$marker" "$dest" 2>/dev/null; then
     mkdir -p "$HOME/.local/bin"
     cat > "$dest" << 'SOLAREDGE_SYNC_END'
 #!/bin/bash
-# solaredge-sync 1.0.3
+# solaredge-sync 1.0.4
 # SolarEdge Monitoring API V2 for the home tile.
 #
 # Tokens stay in ~/.config/omarchy-solaredge/auth.json (mode 600). SolarEdge
@@ -36,7 +36,7 @@ widget "solar" {
 #   solaredge-sync              refresh power and today's energy (30 min poll)
 #   solaredge-sync details      also month, lifetime, battery and meter, if due
 #   solaredge-sync force        the same, ignoring the one-hour details cache
-#   solaredge-sync setup        ask for the site and OAuth app, then sync
+#   solaredge-sync setup        catch the browser approval on this phone, then sync
 #
 # Quarter-hour power covers at most 12 hours, so today's kWh is a separate energy
 # call. Between 21:00 and 05:00 a day already fetched is kept and the live watts
@@ -526,41 +526,125 @@ prompt_secret() {
 }
 
 setup_flow() {
-  printf '\nSolarEdge setup\n' >/dev/tty
-  printf 'Create a Site Access app at developer.solaredge.com\n' >/dev/tty
-  printf 'with SITE_DATA and DEVICE_DATA.\n' >/dev/tty
-  printf 'The portal rejects localhost. Register this redirect URI exactly:\n' >/dev/tty
-  printf 'https://example.com/\n' >/dev/tty
-  printf 'After you approve, the browser opens Example Domain. Tap the address\n' >/dev/tty
-  printf 'bar and copy the full address. It ends in ?code= and expires quickly.\n' >/dev/tty
-  printf 'The site id is the number in the monitoring URL.\n\n' >/dev/tty
+  local redirect="http://127.0.0.1:8734/callback"
+  local saved_site="" saved_id="" saved_secret=""
+  if [[ -s "$AUTH" ]]; then
+    saved_site=$(jq -r '.site_id // empty' "$AUTH" 2>/dev/null || true)
+    saved_id=$(jq -r '.client_id // empty' "$AUTH" 2>/dev/null || true)
+    saved_secret=$(jq -r '.client_secret // empty' "$AUTH" 2>/dev/null || true)
+  fi
 
-  local site client secret redirect code
-  site=$(prompt "Site id")
-  client=$(prompt "Client id")
-  secret=$(prompt_secret "Client secret")
-  redirect=$(prompt "Redirect URI" "https://example.com/")
-  if [[ ! "$site" =~ ^[0-9]+$ || -z "$client" || -z "$secret" || -z "$redirect" ]]; then
-    printf 'Site id, client id, client secret and redirect URI are all required.\n' >/dev/tty
+  printf '\nSolarEdge setup\n' >/dev/tty
+  printf 'In the developer portal, set the redirect URI to exactly:\n' >/dev/tty
+  printf '%s\n' "$redirect" >/dev/tty
+  printf 'The portal rejects the name localhost. This address is the phone.\n' >/dev/tty
+  printf 'The site id is the number in the monitoring address, after /site/.\n' >/dev/tty
+  printf 'Approve in the browser when it opens. Nothing to copy back.\n\n' >/dev/tty
+
+  local site client secret codefile py_pid code url i
+  site=$(prompt "Site id" "$saved_site")
+  client=$(prompt "Client id" "$saved_id")
+  if [[ -n "$saved_secret" && "$client" == "$saved_id" ]]; then
+    secret=$(prompt_secret "Client secret (press enter to keep the saved one)")
+    [[ -z "$secret" ]] && secret="$saved_secret"
+  else
+    secret=$(prompt_secret "Client secret")
+  fi
+  if [[ ! "$site" =~ ^[0-9]+$ || -z "$client" || -z "$secret" ]]; then
+    printf 'Site id, client id and client secret are all required.\n' >/dev/tty
     return 1
   fi
 
-  local url
+  codefile=$(mktemp "${CONFIG}/code.XXXXXX")
+  chmod 600 "$codefile"
+  : >"$codefile"
+  if python3 -c 'import socket,sys; s=socket.socket(); r=s.connect_ex(("127.0.0.1",8734)); s.close(); sys.exit(0 if r==0 else 1)'; then
+    printf 'Port 8734 is already in use. Close whatever is using it and try again.\n' >/dev/tty
+    rm -f "$codefile"
+    return 1
+  fi
+
+  local pyscript
+  pyscript=$(mktemp "${CONFIG}/listen.XXXXXX.py")
+  cat > "$pyscript" << 'PY'
+import http.server, os, urllib.parse, sys
+code_path = sys.argv[1]
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        parsed = urllib.parse.urlparse(self.path)
+        if parsed.path != "/callback":
+            self.send_response(204)
+            self.end_headers()
+            return
+        query = urllib.parse.parse_qs(parsed.query)
+        code = (query.get("code") or [""])[0]
+        err = (query.get("error") or [""])[0]
+        text = code if code else ("error:" + (err or "missing"))
+        tmp = code_path + ".tmp"
+        with open(tmp, "w") as fh:
+            fh.write(text)
+        os.replace(tmp, code_path)
+        if code:
+            page = b"<html><body><h1>Connected.</h1><p>You can close this page.</p></body></html>"
+        else:
+            page = b"<html><body><h1>SolarEdge did not approve.</h1><p>You can close this page.</p></body></html>"
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(page)))
+        self.end_headers()
+        self.wfile.write(page)
+    def log_message(self, fmt, *args):
+        return
+server = http.server.HTTPServer(("127.0.0.1", 8734), Handler)
+while True:
+    server.handle_request()
+    try:
+        with open(code_path) as fh:
+            if fh.read():
+                break
+    except FileNotFoundError:
+        pass
+PY
+  python3 "$pyscript" "$codefile" >/dev/null 2>&1 &
+  py_pid=$!
+  sleep 0.2
+  if ! kill -0 "$py_pid" 2>/dev/null; then
+    printf 'Could not listen on %s\n' "$redirect" >/dev/tty
+    rm -f "$codefile" "$pyscript"
+    return 1
+  fi
+
   url=$(jq -nr --arg id "$client" --arg redir "$redirect" \
     '"https://connect.solaredge.com/authorize?response_type=code&client_id=\($id|@uri)&redirect_uri=\($redir|@uri)&scope=\("SITE_DATA DEVICE_DATA"|@uri)"')
-  printf '\nOpen this link and approve access. The browser opens Example Domain.\n' >/dev/tty
-  printf 'Tap the address bar and paste the full address. It ends in ?code= and expires quickly.\n\n' >/dev/tty
+  printf 'Opening the browser. Approve access for your site.\n' >/dev/tty
   printf '%s\n\n' "$url" >/dev/tty
-  code=$(prompt "Code")
-  if [[ "$code" == *"code="* ]]; then
-    code=$(printf '%s' "$code" | sed -n 's/.*[?&#]code=\([^&]*\).*/\1/p')
-  fi
+  xdg-open "$url" >/dev/null 2>&1 || true
+
+  code=""
+  for i in $(seq 1 180); do
+    if [[ -s "$codefile" ]]; then
+      code=$(cat "$codefile")
+      break
+    fi
+    if ! kill -0 "$py_pid" 2>/dev/null; then
+      break
+    fi
+    sleep 1
+  done
+  kill "$py_pid" 2>/dev/null || true
+  wait "$py_pid" 2>/dev/null || true
+  rm -f "$codefile" "${codefile}.tmp" "$pyscript"
+
   if [[ -z "$code" ]]; then
-    printf 'No code pasted.\n' >/dev/tty
+    printf 'No approval arrived. The browser has to reach %s\n' "$redirect" >/dev/tty
+    return 1
+  fi
+  if [[ "$code" == error:* ]]; then
+    printf 'SolarEdge did not approve (%s).\n' "${code#error:}" >/dev/tty
     return 1
   fi
 
-  local tmp basic body
+  local tmp basic body detail
   tmp=$(mktemp "${CONFIG}/auth.XXXXXX")
   jq -n --arg site "$site" --arg id "$client" --arg secret "$secret" --arg redir "$redirect" \
     '{site_id: $site, client_id: $id, client_secret: $secret, redirect_uri: $redir}' >"$tmp"
@@ -575,8 +659,9 @@ setup_flow() {
     --data-urlencode "code=${code}" \
     --data-urlencode "redirect_uri=${redirect}")
   if [[ "$HTTP_CODE" != "200" ]]; then
-    auth_fail "SolarEdge rejected the code. Connect again."
-    printf 'SolarEdge rejected the code (%s).\n' "$HTTP_CODE" >/dev/tty
+    detail=$(printf '%s' "$body" | tr '\n\r' '  ' | cut -c1-180)
+    auth_fail "SolarEdge returned ${HTTP_CODE}. Connect again."
+    printf 'SolarEdge returned %s.\n%s\n' "$HTTP_CODE" "$detail" >/dev/tty
     return 1
   fi
   local access refresh expires_in
@@ -812,9 +897,9 @@ SOLAREDGE_SYNC_END
         gap: 12
         Text { text: solar.message ?? "Connect your SolarEdge site."; style: body }
         Text { text: "Create a Site Access app at the developer portal with SITE_DATA and DEVICE_DATA."; style: small; color: muted }
-        Text { text: "The portal rejects localhost. Redirect URI, exactly: https://example.com/"; style: small; color: muted }
-        Text { text: "After you approve, the browser opens Example Domain. Tap the address bar and paste the full address. It ends in ?code= and expires quickly."; style: small; color: muted }
-        Text { text: "The site id is the number in the monitoring URL. Setup asks for that, the client id and secret, then the approval. Press enter to keep this redirect URI."; style: small; color: muted }
+        Text { text: "Set its redirect URI to http://127.0.0.1:8734/callback. The portal rejects the name localhost. This address is the phone."; style: small; color: muted }
+        Text { text: "Tap set up and approve in the browser. The phone catches the approval. Nothing to copy back."; style: small; color: muted }
+        Text { text: "The site id is the number in the monitoring address, after /site/. Press enter to keep a value you already entered."; style: small; color: muted }
         Button { text: solar.error == "auth" ? "reconnect" : "set up"; onTap: terminal("~/.local/bin/solaredge-sync setup", "solar") }
         Button { text: "developer portal"; onTap: url("https://developer.solaredge.com/") }
         Button { text: "monitoring"; onTap: url("https://monitoring.solaredge.com/") }
