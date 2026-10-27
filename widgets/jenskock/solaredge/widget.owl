@@ -872,6 +872,9 @@ SOLAREDGE_SYNC_END
   let curve = solar.curve ?? []
   let curveMax = (max(curve) ?? 0) > 0 ? max(curve) : 1
   let sample = solar.sampleTime
+  let axisPoints = count(curve)
+  let axisStart = sample != null && axisPoints > 1 ? sample - (axisPoints - 1) * 15 * 60 : null
+  let axisMid = axisStart != null ? axisStart + (sample - axisStart) / 2 : null
   let ageSec = sample == null ? null : now - sample
   let stale = ageSec != null && ageSec > 20 * 60
   let ago = sample == null ? "" : ageSec < 45 ? "now" : "${fmtAgo(sample, now)} ago"
@@ -939,7 +942,18 @@ SOLAREDGE_SYNC_END
         Text { text: powerText; fontSize: 44; color: producing ? yellow : muted; maxLines: 1 }
         Text { text: "${todayText} today"; style: body }
         Text { text: sample == null ? ago : "${fmtTime(sample, "HH:mm")} · ${ago}"; style: small; color: ageColor }
-        Sparkline { values: curve; min: 0; max: curveMax; color: yellow; area: true; fill: width; height: 160 }
+        Column {
+          gap: 2
+          Sparkline { values: curve; min: 0; max: curveMax; color: yellow; area: true; fill: width; height: 160 }
+          if axisStart != null {
+            Grid {
+              columns: 3
+              Text { text: fmtTime(axisStart, "HH:mm"); style: small; color: muted }
+              Text { text: fmtTime(axisMid, "HH:mm"); style: small; color: muted; align: center }
+              Text { text: fmtTime(sample, "HH:mm"); style: small; color: muted; align: end }
+            }
+          }
+        }
         Text { text: peakWhen == "" ? "peak ${peakText}" : "peak ${peakText} at ${peakWhen}"; style: small; color: muted }
         Rule { }
         Grid {
