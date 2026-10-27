@@ -14,7 +14,7 @@ The token never goes in this file. It stays in `~/.config/omarchy-solaredge/auth
 
 Store path: `widgets/jenskock/solaredge/widget.owl`. The folder name is the GitHub login, lowercase, then a name of lowercase letters, digits and dashes. The folder holds only `widget.owl`, `preview.png` and this README.
 
-The reader is inlined. On first run it installs `~/.local/bin/solaredge-sync`, so that name is not an Arch package. `curl`, `jq` and `python` are. Setup listens on `127.0.0.1:8734` and opens the approval page with `xdg-open`, which is the launcher's browser bridge, not a package. Readings are `~/.config/omarchy-solaredge/data.json`, which the tile reads directly. A `details` or `force` file in that directory asks for the extra figures; the 45-minute poll is an ordinary sync. The same file and the same login feed the home-consumption tile.
+The reader is inlined. On first run it installs `~/.local/bin/solaredge-sync`, so that name is not an Arch package. `curl`, `jq` and `python` are. Setup listens on `127.0.0.1:8734` and opens the approval page with `xdg-open`, which is the launcher's browser bridge, not a package. Readings are `~/.config/omarchy-solaredge/data.json`, which the tile reads directly. A `details` or `force` file in that directory asks for the extra figures; the 45-minute poll is an ordinary sync. The same file and the same login feed `widgets/jenskock/solaredge-usage`. That tile carries the same reader, so either one can sign in.
 
 Two review notes are expected:
 
