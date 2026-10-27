@@ -21,12 +21,12 @@ widget "solar" {
   set -uo pipefail
   umask 077
   dest="$HOME/.local/bin/solaredge-sync"
-  marker="# solaredge-sync 1.0.4"
+  marker="# solaredge-sync 1.0.5"
   if ! grep -qxF "$marker" "$dest" 2>/dev/null; then
     mkdir -p "$HOME/.local/bin"
     cat > "$dest" << 'SOLAREDGE_SYNC_END'
 #!/bin/bash
-# solaredge-sync 1.0.4
+# solaredge-sync 1.0.5
 # SolarEdge Monitoring API V2 for the home tile.
 #
 # Tokens stay in ~/.config/omarchy-solaredge/auth.json (mode 600). SolarEdge
@@ -107,6 +107,20 @@ save_tokens() {
   mv "$tmp" "$AUTH"
 }
 
+# Run a function in this shell and store its stdout in the named variable.
+# body=$(fn) would run fn in a subshell and drop assignments such as HTTP_CODE.
+capture() {
+  local __name="$1"
+  shift
+  local __file __status
+  __file=$(mktemp)
+  "$@" >"$__file"
+  __status=$?
+  printf -v "$__name" '%s' "$(cat "$__file")"
+  rm -f "$__file"
+  return "$__status"
+}
+
 # POST the token endpoint. Prints the body. Sets HTTP_CODE.
 token_post() {
   local basic="$1"
@@ -144,9 +158,9 @@ ensure_token() {
   secret=$(jq -r '.client_secret' "$AUTH")
   refresh=$(jq -r '.refresh_token' "$AUTH")
   basic=$(basic_auth "$id" "$secret")
-  body=$(token_post "$basic" \
+  capture body token_post "$basic" \
     --data-urlencode "grant_type=refresh_token" \
-    --data-urlencode "refresh_token=${refresh}")
+    --data-urlencode "refresh_token=${refresh}"
   if [[ "$HTTP_CODE" != "200" ]]; then
     auth_fail "SolarEdge rejected the token. Connect again."
     return 1
@@ -339,11 +353,11 @@ fetch_power_and_today() {
   local from to body patch kwh
   from=$(iso_utc "12 hours ago")
   to=$(iso_utc "now")
-  body=$(se_get "power" \
+  capture body se_get "power" \
     --data-urlencode "from=${from}" \
     --data-urlencode "to=${to}" \
     --data-urlencode "resolution=QUARTER_HOUR" \
-    --data-urlencode "unit=W") || return 1
+    --data-urlencode "unit=W" || return 1
   if [[ "$HTTP_CODE" == "429" ]]; then
     fail_soft rate "SolarEdge rate limit. Trying again later."
     return 1
@@ -355,11 +369,11 @@ fetch_power_and_today() {
   patch=$(apply_power "$body") || { fail_soft offline "SolarEdge sent power data this widget couldn't read."; return 1; }
   local midnight
   midnight=$(iso_utc "today 00:00")
-  body=$(se_get "energy" \
+  capture body se_get "energy" \
     --data-urlencode "from=${midnight}" \
     --data-urlencode "to=${to}" \
     --data-urlencode "resolution=DAY" \
-    --data-urlencode "unit=KWH") || return 1
+    --data-urlencode "unit=KWH" || return 1
   kwh="null"
   local energy_note=""
   if [[ "$HTTP_CODE" == "429" ]]; then
@@ -392,11 +406,11 @@ fetch_details() {
   from=$(iso_utc "$(date +%Y-%m-01) 00:00")
   patch=$(jq -cn '{detailsAt: (now | floor)}')
 
-  body=$(se_get "energy" \
+  capture body se_get "energy" \
     --data-urlencode "from=${from}" \
     --data-urlencode "to=${to}" \
     --data-urlencode "resolution=MONTH" \
-    --data-urlencode "unit=KWH") || return 1
+    --data-urlencode "unit=KWH" || return 1
   if [[ "$HTTP_CODE" == "429" ]]; then
     fail_soft rate "SolarEdge rate limit. Trying again later."
     return 1
@@ -406,11 +420,11 @@ fetch_details() {
     patch=$(jq -c --argjson k "$kwh" '.monthKwh = $k' <<<"$patch")
   fi
 
-  body=$(se_get "energy" \
+  capture body se_get "energy" \
     --data-urlencode "from=2010-01-01T00:00:00Z" \
     --data-urlencode "to=${to}" \
     --data-urlencode "resolution=TOTAL" \
-    --data-urlencode "unit=KWH") || return 1
+    --data-urlencode "unit=KWH" || return 1
   if [[ "$HTTP_CODE" == "200" ]]; then
     kwh=$(apply_kwh "$body" 2>/dev/null) || kwh=null
     patch=$(jq -c --argjson k "$kwh" '.lifetimeKwh = $k' <<<"$patch")
@@ -429,20 +443,20 @@ fetch_details() {
   fi
   if (( probe )); then
     local devs kinds
-    devs=$(se_get "devices" \
+    capture devs se_get "devices" \
       --data-urlencode "types=BATTERY" \
       --data-urlencode "types=METER" \
-      --data-urlencode "types=STORAGE") || return 1
+      --data-urlencode "types=STORAGE" || return 1
     local dev_code="$HTTP_CODE"
     if [[ -z "$devs" ]]; then devs='{}'; fi
     kinds=$(jq -c "$devices_json" <<<"$devs" 2>/dev/null) || kinds='{"battery":true,"meter":true}'
     local from3 batt_body meter_body
     from3=$(iso_utc "3 hours ago")
     if [[ $(jq -r '.battery' <<<"$kinds") == "true" || "$dev_code" != "200" ]]; then
-      batt_body=$(se_get "storage/telemetry" \
+      capture batt_body se_get "storage/telemetry" \
         --data-urlencode "from=${from3}" \
         --data-urlencode "to=${to}" \
-        --data-urlencode "resolution=QUARTER_HOUR") || return 1
+        --data-urlencode "resolution=QUARTER_HOUR" || return 1
       if [[ "$HTTP_CODE" == "200" ]]; then
         batt=$(jq -c "$battery_json" <<<"$batt_body") || batt=null
       else
@@ -452,10 +466,10 @@ fetch_details() {
       batt=null
     fi
     if [[ $(jq -r '.meter' <<<"$kinds") == "true" || "$dev_code" != "200" ]]; then
-      meter_body=$(se_get "meters/telemetry" \
+      capture meter_body se_get "meters/telemetry" \
         --data-urlencode "from=${from3}" \
         --data-urlencode "to=${to}" \
-        --data-urlencode "resolution=QUARTER_HOUR") || return 1
+        --data-urlencode "resolution=QUARTER_HOUR" || return 1
       if [[ "$HTTP_CODE" == "200" ]]; then
         meter=$(jq -c "$meter_json" <<<"$meter_body") || meter=null
       else
@@ -654,10 +668,10 @@ PY
   exec 9>"$LOCK"
   flock 9
   basic=$(basic_auth "$client" "$secret")
-  body=$(token_post "$basic" \
+  capture body token_post "$basic" \
     --data-urlencode "grant_type=authorization_code" \
     --data-urlencode "code=${code}" \
-    --data-urlencode "redirect_uri=${redirect}")
+    --data-urlencode "redirect_uri=${redirect}"
   if [[ "$HTTP_CODE" != "200" ]]; then
     detail=$(printf '%s' "$body" | tr '\n\r' '  ' | cut -c1-180)
     auth_fail "SolarEdge returned ${HTTP_CODE}. Connect again."
