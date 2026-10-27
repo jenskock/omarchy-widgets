@@ -7,7 +7,7 @@ widget "solar" {
 
   // The reader installs itself to ~/.local/bin/solaredge-sync. Tokens stay in
   // ~/.config/omarchy-solaredge (mode 700, the file mode 600). Readings are
-  // ~/.cache/omarchy-solaredge/data.json. A mode file asks for details or a
+  // ~/.config/omarchy-solaredge/data.json. A mode file asks for details or a
   // forced refresh; the half-hour poll is an ordinary sync. base64 only builds
   // the HTTP Basic header. chmod keeps the token directory owner-only.
   requires { pacman: ["curl", "jq"] }
@@ -21,12 +21,12 @@ widget "solar" {
   set -uo pipefail
   umask 077
   dest="$HOME/.local/bin/solaredge-sync"
-  marker="# solaredge-sync 1.0.1"
+  marker="# solaredge-sync 1.0.2"
   if ! grep -qxF "$marker" "$dest" 2>/dev/null; then
     mkdir -p "$HOME/.local/bin"
     cat > "$dest" << 'SOLAREDGE_SYNC_END'
 #!/bin/bash
-# solaredge-sync 1.0.1
+# solaredge-sync 1.0.2
 # SolarEdge Monitoring API V2 for the home tile.
 #
 # Tokens stay in ~/.config/omarchy-solaredge/auth.json (mode 600). SolarEdge
@@ -528,7 +528,9 @@ prompt_secret() {
 setup_flow() {
   printf '\nSolarEdge setup\n' >/dev/tty
   printf 'Create a Site Access app at developer.solaredge.com\n' >/dev/tty
-  printf 'with SITE_DATA and DEVICE_DATA, and register a redirect URI.\n' >/dev/tty
+  printf 'with SITE_DATA and DEVICE_DATA.\n' >/dev/tty
+  printf 'Register this redirect URI exactly: https://localhost/solaredge\n' >/dev/tty
+  printf 'Nothing is hosted there. After you approve, copy the code from the address bar.\n' >/dev/tty
   printf 'The site id is the number in the monitoring URL.\n\n' >/dev/tty
 
   local site client secret redirect code
@@ -807,9 +809,10 @@ SOLAREDGE_SYNC_END
         scroll: true
         gap: 12
         Text { text: solar.message ?? "Connect your SolarEdge site."; style: body }
-        Text { text: "Create a Site Access app at the developer portal with SITE_DATA and DEVICE_DATA, and register a redirect URI."; style: small; color: muted }
-        Text { text: "The site id is the number in the monitoring URL. Setup asks for that, the client id and secret, then a browser approval."; style: small; color: muted }
-        Text { text: "If the redirect page does not load, paste the code from the address bar. It expires quickly."; style: small; color: muted }
+        Text { text: "Create a Site Access app at the developer portal with SITE_DATA and DEVICE_DATA."; style: small; color: muted }
+        Text { text: "Redirect URI, exactly: https://localhost/solaredge"; style: small; color: muted }
+        Text { text: "Nothing is hosted there. After you approve, paste the code from the address bar. It expires quickly."; style: small; color: muted }
+        Text { text: "The site id is the number in the monitoring URL. Setup asks for that, the client id and secret, then the approval. Press enter to keep this redirect URI."; style: small; color: muted }
         Button { text: solar.error == "auth" ? "reconnect" : "set up"; onTap: terminal("~/.local/bin/solaredge-sync setup", "solar") }
         Button { text: "developer portal"; onTap: url("https://developer.solaredge.com/") }
         Button { text: "monitoring"; onTap: url("https://monitoring.solaredge.com/") }
