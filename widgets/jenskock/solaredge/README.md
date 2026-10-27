@@ -14,14 +14,14 @@ The token never goes in this file. It stays in `~/.config/omarchy-solaredge/auth
 
 Store path: `widgets/jenskock/solaredge/widget.owl`. The folder name is the GitHub login, lowercase, then a name of lowercase letters, digits and dashes. The folder holds only `widget.owl`, `preview.png` and this README.
 
-The reader is inlined. On first run it installs `~/.local/bin/solaredge-sync`, so that name is not an Arch package. `curl`, `jq` and `python` are. Setup listens on `127.0.0.1:8734` and opens the approval page with `xdg-open`, which is the launcher's browser bridge, not a package. Readings are `~/.config/omarchy-solaredge/data.json`, which the tile reads directly. A `details` or `force` file in that directory asks for the extra figures; the half-hour poll is an ordinary sync.
+The reader is inlined. On first run it installs `~/.local/bin/solaredge-sync`, so that name is not an Arch package. `curl`, `jq` and `python` are. Setup listens on `127.0.0.1:8734` and opens the approval page with `xdg-open`, which is the launcher's browser bridge, not a package. Readings are `~/.config/omarchy-solaredge/data.json`, which the tile reads directly. A `details` or `force` file in that directory asks for the extra figures; the 45-minute poll is an ordinary sync. The same file and the same login feed the home-consumption tile.
 
 Two review notes are expected:
 
 - `base64` builds the HTTP Basic header from the client id and secret. It does not decode a download.
 - `chmod 700` is the config directory, `chmod 600` the token file, and `chmod 755` the installed reader.
 
-Cloud samples are 15 minutes apart. Quarter-hour power covers at most 12 hours, so today's energy is a second call. Between 21:00 and 05:00 a day already fetched is kept and the live watts are shown as 0, which stays inside the free tier.
+Cloud samples are 15 minutes apart. Quarter-hour series cover at most 12 hours. One poll reads production power, the overview for today's production and consumption, and meter telemetry for the consumption curve. Between 21:00 and 05:00 a day already fetched is kept and production is shown as 0, which stays inside the free tier.
 
 ## License
 

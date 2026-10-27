@@ -8,7 +8,7 @@ widget "solar" {
   // The reader installs itself to ~/.local/bin/solaredge-sync. Tokens stay in
   // ~/.config/omarchy-solaredge (mode 700, the file mode 600). Readings are
   // ~/.config/omarchy-solaredge/data.json. A mode file asks for details or a
-  // forced refresh; the half-hour poll is an ordinary sync. base64 only builds
+  // forced refresh; the 45-minute poll is an ordinary sync. base64 only builds
   // the HTTP Basic header. chmod keeps the token directory owner-only.
   requires { pacman: ["curl", "jq", "python"] }
 
@@ -21,26 +21,27 @@ widget "solar" {
   set -uo pipefail
   umask 077
   dest="$HOME/.local/bin/solaredge-sync"
-  marker="# solaredge-sync 1.0.5"
+  marker="# solaredge-sync 1.0.6"
   if ! grep -qxF "$marker" "$dest" 2>/dev/null; then
     mkdir -p "$HOME/.local/bin"
     cat > "$dest" << 'SOLAREDGE_SYNC_END'
 #!/bin/bash
-# solaredge-sync 1.0.5
+# solaredge-sync 1.0.6
 # SolarEdge Monitoring API V2 for the home tile.
 #
 # Tokens stay in ~/.config/omarchy-solaredge/auth.json (mode 600). SolarEdge
 # replaces the refresh token on every use, so it is written back before anything
 # else runs. The widget only reads ~/.config/omarchy-solaredge/data.json.
 #
-#   solaredge-sync              refresh power and today's energy (30 min poll)
+#   solaredge-sync              refresh production and consumption (45 min poll)
 #   solaredge-sync details      also month, lifetime, battery and meter, if due
 #   solaredge-sync force        the same, ignoring the one-hour details cache
 #   solaredge-sync setup        catch the browser approval on this phone, then sync
 #
-# Quarter-hour power covers at most 12 hours, so today's kWh is a separate energy
-# call. Between 21:00 and 05:00 a day already fetched is kept and the live watts
-# are shown as 0, which stays inside the free tier's 2,000 credits a month.
+# One poll is production power, the overview (today's production and consumption)
+# and meter telemetry (the consumption curve). Quarter-hour series cover at most
+# 12 hours. Between 21:00 and 05:00 a day already fetched is kept and production
+# is shown as 0. The 45-minute gap stays inside the free tier's 2,000 credits.
 
 set -uo pipefail
 
@@ -50,7 +51,7 @@ DATA="${CONFIG}/data.json"
 LOCK="${CONFIG}/lock"
 API="https://monitoringapi.solaredge.com/v2"
 TOKEN_URL="${API}/oauth2/token"
-MIN_POWER_GAP=1200
+MIN_POWER_GAP=2400
 DETAILS_GAP=3600
 PROBE_GAP=86400
 
@@ -253,6 +254,53 @@ def asnum:
   end
 '
 
+# Overview window -> kWh for production and consumption.
+overview_kwh='
+def asnum:
+  if . == null then null
+  elif type == "number" then .
+  elif type == "string" then (tonumber? // null)
+  else null end;
+def kwh($node):
+  if $node == null then null
+  else ($node.total | asnum) as $t
+    | if $t == null then null
+      else ($node.unit // "WH" | ascii_upcase) as $u
+        | if $u == "WH" then $t / 1000 elif $u == "MWH" then $t * 1000 else $t end
+      end
+  end;
+def part($node; $key):
+  if $node == null then null
+  else kwh({total: $node[$key], unit: $node.unit})
+  end;
+{
+  productionKwh: kwh(.production),
+  consumptionKwh: kwh(.consumption),
+  fromPvKwh: part(.consumption; "fromPv"),
+  fromGridKwh: part(.consumption; "fromGrid")
+}
+'
+
+# Latest import and export watts from meter telemetry.
+meter_series_json='
+def asnum:
+  if . == null then null
+  elif type == "number" then .
+  elif type == "string" then (tonumber? // null)
+  else null end;
+def lastv($node):
+  if $node == null then null
+  else [($node.values // [])[] | .value | asnum | select(. != null)]
+    | if length == 0 then null else last end
+  end;
+[.meters | to_entries[] | select(.key != "CONSUMPTION") | .value
+  | select(has("importPower") or has("exportPower"))] | last as $g
+| {
+    importW: (if $g == null then null else lastv($g.importPower) end),
+    exportW: (if $g == null then null else lastv($g.exportPower) end)
+  }
+'
+
 battery_json='
 def asnum:
   if . == null then null
@@ -367,27 +415,72 @@ fetch_power_and_today() {
     return 1
   fi
   patch=$(apply_power "$body") || { fail_soft offline "SolarEdge sent power data this widget couldn't read."; return 1; }
-  local midnight
+  local midnight kwh="null" energy_note="" ov series cpatch grid
   midnight=$(iso_utc "today 00:00")
-  capture body se_get "energy" \
+  capture body se_get "overview" \
     --data-urlencode "from=${midnight}" \
-    --data-urlencode "to=${to}" \
-    --data-urlencode "resolution=DAY" \
-    --data-urlencode "unit=KWH" || return 1
-  kwh="null"
-  local energy_note=""
+    --data-urlencode "to=${to}" || true
   if [[ "$HTTP_CODE" == "429" ]]; then
     energy_note="SolarEdge rate limit. Trying again later."
   elif [[ "$HTTP_CODE" == "200" ]]; then
-    kwh=$(apply_kwh "$body" 2>/dev/null) || kwh=null
+    ov=$(jq -c "$overview_kwh" <<<"$body" 2>/dev/null) || ov='{}'
+    kwh=$(jq -c '.productionKwh // null' <<<"$ov")
+    patch=$(jq -c --argjson ov "$ov" '. + {
+      consTodayKwh: $ov.consumptionKwh,
+      consFromPvKwh: $ov.fromPvKwh,
+      consFromGridKwh: $ov.fromGridKwh
+    }' <<<"$patch")
+  fi
+  if [[ "$kwh" == "null" || -z "$kwh" ]]; then
+    capture body se_get "energy" \
+      --data-urlencode "from=${midnight}" \
+      --data-urlencode "to=${to}" \
+      --data-urlencode "resolution=DAY" \
+      --data-urlencode "unit=KWH" || true
+    if [[ "$HTTP_CODE" == "200" ]]; then
+      kwh=$(apply_kwh "$body" 2>/dev/null) || kwh=null
+    fi
   fi
   if [[ "$kwh" == "null" || -z "$kwh" ]]; then
     # The day's curve may only cover the last 12 hours, so this undercounts
-    # a long summer day. Prefer the energy call above when it answers.
+    # a long summer day. Prefer the overview above when it answers.
     kwh=$(jq -c '[.curve[]?] | if length == 0 then null else (add * 0.25 / 1000) end' <<<"$patch")
   fi
   patch=$(jq -c --argjson kwh "$kwh" --arg note "$energy_note" \
     '.todayKwh = $kwh | if $note == "" then . else .error = "rate" | .message = $note end' <<<"$patch")
+
+  capture body se_get "meters/telemetry" \
+    --data-urlencode "from=${from}" \
+    --data-urlencode "to=${to}" \
+    --data-urlencode "resolution=QUARTER_HOUR" || true
+  if [[ "$HTTP_CODE" == "200" ]]; then
+    series=$(jq -c '.meters.CONSUMPTION.consumptionPower // empty' <<<"$body")
+    if [[ -n "$series" && "$series" != "null" ]] && jq -e '.values | length > 0' <<<"$series" >/dev/null 2>&1; then
+      cpatch=$(apply_power "$series") || cpatch=""
+      if [[ -n "$cpatch" ]]; then
+        patch=$(jq -c --argjson c "$cpatch" '. + {
+          consCurve: $c.curve,
+          consW: $c.powerW,
+          consSampleTime: $c.sampleTime,
+          consPeakW: $c.peakW,
+          consPeakTime: $c.peakTime,
+          consMeter: true
+        }' <<<"$patch")
+      fi
+    else
+      patch=$(jq -c '. + {consMeter: false}' <<<"$patch")
+    fi
+    grid=$(jq -c "$meter_series_json" <<<"$body" 2>/dev/null) || grid='{}'
+    patch=$(jq -c --argjson g "$grid" '
+      .meter = {
+        consumptionW: (.consW // null),
+        importW: $g.importW,
+        exportW: $g.exportW
+      }
+      | if .meter.consumptionW == null and .meter.importW == null and .meter.exportW == null
+        then del(.meter) else . end
+    ' <<<"$patch")
+  fi
   write_data "$patch"
 }
 
@@ -418,6 +511,14 @@ fetch_details() {
   if [[ "$HTTP_CODE" == "200" ]]; then
     kwh=$(apply_kwh "$body" 2>/dev/null) || kwh=null
     patch=$(jq -c --argjson k "$kwh" '.monthKwh = $k' <<<"$patch")
+  fi
+
+  capture body se_get "overview" \
+    --data-urlencode "from=${from}" \
+    --data-urlencode "to=${to}" || true
+  if [[ "$HTTP_CODE" == "200" ]]; then
+    kwh=$(jq -c "$overview_kwh" <<<"$body" 2>/dev/null | jq -c '.consumptionKwh // null') || kwh=null
+    patch=$(jq -c --argjson k "$kwh" '.consMonthKwh = $k' <<<"$patch")
   fi
 
   capture body se_get "energy" \
@@ -471,15 +572,28 @@ fetch_details() {
         --data-urlencode "to=${to}" \
         --data-urlencode "resolution=QUARTER_HOUR" || return 1
       if [[ "$HTTP_CODE" == "200" ]]; then
-        meter=$(jq -c "$meter_json" <<<"$meter_body") || meter=null
+        meter=$(jq -c "$meter_series_json" <<<"$meter_body" | jq -c --argjson body "$meter_body" '
+          . as $g
+          | [$body.meters.CONSUMPTION.consumptionPower.values // [] | .[] | .value | numbers] as $vs
+          | {
+              consumptionW: (if ($vs | length) == 0 then null else $vs[-1] end),
+              importW: $g.importW,
+              exportW: $g.exportW
+            }
+          | if .consumptionW == null and .importW == null and .exportW == null then null else . end
+        ') || meter=null
       else
         meter=null
       fi
     else
       meter=null
     fi
-    patch=$(jq -c --argjson b "$batt" --argjson m "$meter" \
-      '.battery = $b | .meter = $m | .probeAt = (now | floor)' <<<"$patch")
+    if [[ "$meter" == "null" || -z "$meter" ]]; then
+      patch=$(jq -c --argjson b "$batt" '.battery = $b | .probeAt = (now | floor)' <<<"$patch")
+    else
+      patch=$(jq -c --argjson b "$batt" --argjson m "$meter" \
+        '.battery = $b | .meter = $m | .probeAt = (now | floor)' <<<"$patch")
+    fi
   fi
   write_data "$patch"
 }
@@ -745,6 +859,11 @@ JSON
 JSON
 )
   jq -e '.battery == true and .meter == true' <<<"$got" >/dev/null
+  got=$(jq -c "$overview_kwh" <<'JSON'
+{"production":{"total":8110,"unit":"WH"},"consumption":{"total":13014,"unit":"WH","fromPv":4694,"fromGrid":8320}}
+JSON
+)
+  jq -e '.productionKwh == 8.11 and .consumptionKwh == 13.014 and .fromPvKwh == 4.694 and .fromGridKwh == 8.32' <<<"$got" >/dev/null
   printf 'ok\n'
 }
 
@@ -787,7 +906,7 @@ SOLAREDGE_SYNC_END
     mode=details
   fi
   exec "$dest" "$mode"
-  """) every 30m timeout 60s
+  """) every 45m timeout 60s
 
   let watts = solar.powerW
   let producing = watts != null && watts > 0
