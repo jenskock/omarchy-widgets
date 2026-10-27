@@ -960,7 +960,7 @@ SOLAREDGE_SYNC_END
     gap: 2
     Row {
       align: center
-      Text { text: "solar"; style: muted; weight: 1 }
+      Text { text: "production"; style: muted; weight: 1 }
       if ready { Text { text: ago; style: small; color: ageColor; maxLines: 1 } }
     }
     if ready {
@@ -976,7 +976,7 @@ SOLAREDGE_SYNC_END
   }
 
   screen {
-    title: "solar"
+    title: "production"
     if ready {
       Column {
         scroll: true
