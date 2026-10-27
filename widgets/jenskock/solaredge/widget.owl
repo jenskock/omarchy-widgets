@@ -5,19 +5,11 @@ widget "solar" {
   minSize: 3x3
   meta { description: "SolarEdge power now and today's energy, with the day's curve. Open it for the peak, month, lifetime, and battery or grid if the site has them."; version: "1.0"; license: "MIT"; category: "home"; owl: 10 }
 
-  // The reader installs itself to ~/.local/bin/solaredge-sync. Tokens stay in
-  // ~/.config/omarchy-solaredge (mode 700, the file mode 600). Readings are
-  // ~/.config/omarchy-solaredge/data.json. A mode file asks for details or a
-  // forced refresh; the 45-minute poll is an ordinary sync. base64 only builds
-  // the HTTP Basic header. chmod keeps the token directory owner-only.
   requires { pacman: ["curl", "jq", "python"] }
 
   source now = clock every 1m
   source solar = file("~/.config/omarchy-solaredge/data.json") json
   source pulse = cmd("""
-  # Installs ~/.local/bin/solaredge-sync from this file, then refreshes.
-  # base64 encodes the client id and secret for HTTP Basic. It does not decode a download.
-  # chmod 700 is the token directory. chmod 755 makes the reader runnable. chmod 600 is the token file.
   set -uo pipefail
   umask 077
   dest="$HOME/.local/bin/solaredge-sync"
@@ -27,21 +19,6 @@ widget "solar" {
     cat > "$dest" << 'SOLAREDGE_SYNC_END'
 #!/bin/bash
 # solaredge-sync 1.0.6
-# SolarEdge Monitoring API V2 for the home tile.
-#
-# Tokens stay in ~/.config/omarchy-solaredge/auth.json (mode 600). SolarEdge
-# replaces the refresh token on every use, so it is written back before anything
-# else runs. The widget only reads ~/.config/omarchy-solaredge/data.json.
-#
-#   solaredge-sync              refresh production and consumption (45 min poll)
-#   solaredge-sync details      also month, lifetime, battery and meter, if due
-#   solaredge-sync force        the same, ignoring the one-hour details cache
-#   solaredge-sync setup        catch the browser approval on this phone, then sync
-#
-# One poll is production power, the overview (today's production and consumption)
-# and meter telemetry (the consumption curve). Quarter-hour series cover at most
-# 12 hours. Between 21:00 and 05:00 a day already fetched is kept and production
-# is shown as 0. The 45-minute gap stays inside the free tier's 2,000 credits.
 
 set -uo pipefail
 
@@ -58,13 +35,10 @@ PROBE_GAP=86400
 mkdir -p "$CONFIG"
 chmod 700 "$CONFIG"
 
-# --- small helpers -----------------------------------------------------------
-
 now_s() { date +%s; }
 
 iso_utc() { date -u -d "$1" +%Y-%m-%dT%H:%M:%SZ; }
 
-# Previous data.json, or an empty object.
 prev() {
   if [[ -s "$DATA" ]]; then cat "$DATA"; else echo '{}'; fi
 }
@@ -108,8 +82,6 @@ save_tokens() {
   mv "$tmp" "$AUTH"
 }
 
-# Run a function in this shell and store its stdout in the named variable.
-# body=$(fn) would run fn in a subshell and drop assignments such as HTTP_CODE.
 capture() {
   local __name="$1"
   shift
@@ -122,7 +94,6 @@ capture() {
   return "$__status"
 }
 
-# POST the token endpoint. Prints the body. Sets HTTP_CODE.
 token_post() {
   local basic="$1"
   shift
@@ -143,8 +114,6 @@ basic_auth() {
   printf '%s:%s' "$1" "$2" | base64 -w 0
 }
 
-# Refresh if the access token expires within five minutes. The new refresh
-# token is stored before this function returns.
 ensure_token() {
   local exp now access
   now=$(now_s)
@@ -177,8 +146,6 @@ ensure_token() {
   ACCESS="$new_access"
 }
 
-# GET /v2/sites/{id}/{path}. Query pairs follow as curl --data-urlencode args.
-# Sets HTTP_CODE and prints the body. One 401 retries after a forced refresh.
 se_get() {
   local path="$1"
   shift
@@ -195,7 +162,6 @@ se_get() {
     if [[ "$code" == "401" && "$try" == "1" ]]; then
       rm -f "$tmp"
       local old="$ACCESS"
-      # Drop the cached access token so ensure_token actually refreshes.
       jq '.expires_at = 0' "$AUTH" >"${AUTH}.tmp" && mv "${AUTH}.tmp" "$AUTH" && chmod 600 "$AUTH"
       ensure_token || { HTTP_CODE=401; echo '{}'; return 1; }
       [[ "$ACCESS" == "$old" ]] && { HTTP_CODE=401; echo '{}'; return 1; }
@@ -207,9 +173,6 @@ se_get() {
   done
 }
 
-# --- response shapes ---------------------------------------------------------
-
-# Power series -> {curve, powerW, sample, peakW, peakStamp}. Watts.
 power_json='
 def asnum:
   if . == null then null
@@ -237,7 +200,6 @@ def scale($unit):
   }
 '
 
-# Energy series -> kWh (sum of the buckets) or null.
 energy_json='
 def asnum:
   if . == null then null
@@ -254,7 +216,6 @@ def asnum:
   end
 '
 
-# Overview window -> kWh for production and consumption.
 overview_kwh='
 def asnum:
   if . == null then null
@@ -281,7 +242,6 @@ def part($node; $key):
 }
 '
 
-# Latest import and export watts from meter telemetry.
 meter_series_json='
 def asnum:
   if . == null then null
@@ -372,8 +332,6 @@ apply_kwh() {
   jq -c "$energy_json" <<<"$1"
 }
 
-# --- fetches -----------------------------------------------------------------
-
 SITE_ID=""
 ACCESS=""
 
@@ -442,8 +400,6 @@ fetch_power_and_today() {
     fi
   fi
   if [[ "$kwh" == "null" || -z "$kwh" ]]; then
-    # The day's curve may only cover the last 12 hours, so this undercounts
-    # a long summer day. Prefer the overview above when it answers.
     kwh=$(jq -c '[.curve[]?] | if length == 0 then null else (add * 0.25 / 1000) end' <<<"$patch")
   fi
   patch=$(jq -c --argjson kwh "$kwh" --arg note "$energy_note" \
@@ -631,8 +587,6 @@ sync_body() {
     fi
   fi
 }
-
-# --- setup -------------------------------------------------------------------
 
 prompt() {
   local label="$1" default="${2:-}" value
