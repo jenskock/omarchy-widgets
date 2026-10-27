@@ -21,12 +21,12 @@ widget "solar" {
   set -uo pipefail
   umask 077
   dest="$HOME/.local/bin/solaredge-sync"
-  marker="# solaredge-sync 1.0.2"
+  marker="# solaredge-sync 1.0.3"
   if ! grep -qxF "$marker" "$dest" 2>/dev/null; then
     mkdir -p "$HOME/.local/bin"
     cat > "$dest" << 'SOLAREDGE_SYNC_END'
 #!/bin/bash
-# solaredge-sync 1.0.2
+# solaredge-sync 1.0.3
 # SolarEdge Monitoring API V2 for the home tile.
 #
 # Tokens stay in ~/.config/omarchy-solaredge/auth.json (mode 600). SolarEdge
@@ -529,15 +529,17 @@ setup_flow() {
   printf '\nSolarEdge setup\n' >/dev/tty
   printf 'Create a Site Access app at developer.solaredge.com\n' >/dev/tty
   printf 'with SITE_DATA and DEVICE_DATA.\n' >/dev/tty
-  printf 'Register this redirect URI exactly: https://localhost/solaredge\n' >/dev/tty
-  printf 'Nothing is hosted there. After you approve, copy the code from the address bar.\n' >/dev/tty
+  printf 'The portal rejects localhost. Register this redirect URI exactly:\n' >/dev/tty
+  printf 'https://example.com/\n' >/dev/tty
+  printf 'After you approve, the browser opens Example Domain. Tap the address\n' >/dev/tty
+  printf 'bar and copy the full address. It ends in ?code= and expires quickly.\n' >/dev/tty
   printf 'The site id is the number in the monitoring URL.\n\n' >/dev/tty
 
   local site client secret redirect code
   site=$(prompt "Site id")
   client=$(prompt "Client id")
   secret=$(prompt_secret "Client secret")
-  redirect=$(prompt "Redirect URI" "https://localhost/solaredge")
+  redirect=$(prompt "Redirect URI" "https://example.com/")
   if [[ ! "$site" =~ ^[0-9]+$ || -z "$client" || -z "$secret" || -z "$redirect" ]]; then
     printf 'Site id, client id, client secret and redirect URI are all required.\n' >/dev/tty
     return 1
@@ -546,8 +548,8 @@ setup_flow() {
   local url
   url=$(jq -nr --arg id "$client" --arg redir "$redirect" \
     '"https://connect.solaredge.com/authorize?response_type=code&client_id=\($id|@uri)&redirect_uri=\($redir|@uri)&scope=\("SITE_DATA DEVICE_DATA"|@uri)"')
-  printf '\nOpen this link, approve access, then paste the code from the\n' >/dev/tty
-  printf 'redirect address bar (the page itself may not load). The code expires quickly.\n\n' >/dev/tty
+  printf '\nOpen this link and approve access. The browser opens Example Domain.\n' >/dev/tty
+  printf 'Tap the address bar and paste the full address. It ends in ?code= and expires quickly.\n\n' >/dev/tty
   printf '%s\n\n' "$url" >/dev/tty
   code=$(prompt "Code")
   if [[ "$code" == *"code="* ]]; then
@@ -810,8 +812,8 @@ SOLAREDGE_SYNC_END
         gap: 12
         Text { text: solar.message ?? "Connect your SolarEdge site."; style: body }
         Text { text: "Create a Site Access app at the developer portal with SITE_DATA and DEVICE_DATA."; style: small; color: muted }
-        Text { text: "Redirect URI, exactly: https://localhost/solaredge"; style: small; color: muted }
-        Text { text: "Nothing is hosted there. After you approve, paste the code from the address bar. It expires quickly."; style: small; color: muted }
+        Text { text: "The portal rejects localhost. Redirect URI, exactly: https://example.com/"; style: small; color: muted }
+        Text { text: "After you approve, the browser opens Example Domain. Tap the address bar and paste the full address. It ends in ?code= and expires quickly."; style: small; color: muted }
         Text { text: "The site id is the number in the monitoring URL. Setup asks for that, the client id and secret, then the approval. Press enter to keep this redirect URI."; style: small; color: muted }
         Button { text: solar.error == "auth" ? "reconnect" : "set up"; onTap: terminal("~/.local/bin/solaredge-sync setup", "solar") }
         Button { text: "developer portal"; onTap: url("https://developer.solaredge.com/") }

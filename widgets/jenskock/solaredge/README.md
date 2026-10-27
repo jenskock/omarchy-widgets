@@ -6,7 +6,7 @@ The picture is sample data: 4.2 kW, 18.4 kWh today, a made-up curve. It is not a
 
 ## Sign in
 
-Create a Site Access app at [developer.solaredge.com](https://developer.solaredge.com/) with `SITE_DATA` and `DEVICE_DATA`. Register the redirect URI `https://localhost/solaredge` exactly, with no trailing slash. Nothing is hosted there. After you approve, the address bar is that URI plus `?code=...`, and the page itself does not load. Paste the whole address or just the code. Setup offers the same URI as the default, so press enter unless the app was registered with a different one. The two have to match character for character. The site id is the number in the monitoring URL.
+Create a Site Access app at [developer.solaredge.com](https://developer.solaredge.com/) with `SITE_DATA` and `DEVICE_DATA`. The portal rejects `localhost`. Register `https://example.com/` exactly, including the trailing slash. After you approve, the browser opens the Example Domain page. Tap the address bar and copy the full address: it is that URI plus `?code=...`. Paste the whole address or just the code. Setup offers the same URI as the default, so press enter unless the app was registered with a different one. The two have to match character for character. The site id is the number in the monitoring URL.
 
 The token never goes in this file. It stays in `~/.config/omarchy-solaredge/auth.json` (mode 600). SolarEdge replaces the refresh token on every use, and the reader writes the new one back before it asks for readings.
 
